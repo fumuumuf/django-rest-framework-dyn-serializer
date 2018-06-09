@@ -183,3 +183,37 @@ curl http://localhost:8000/article/?article_fields=id,title,content,author&autho
 ```
 
 
+
+## the difference between origin and this repo
+
+this repository is a fork of [Nepherhotep/django-rest-framework-dyn-serializer: Dynamic serializer for DRF to allow REST endpoint to return model fields on demand](https://github.com/Nepherhotep/django-rest-framework-dyn-serializer) .
+
+I added a Mixin "DynSerializerMixin" to them. 
+
+A serializer inherited it can have DynModelSerializer fields without fields_param attribute.
+
+ex)
+
+```py
+class AuthorDynSerializer(DynModelSerializer):
+    article = ArticleDynSerializer(many=True, source='articles')
+
+    class Meta:
+        model = Author
+        fields_param = 'author_fields'
+        fields = ['id', 'name', 'birth_date', 'article']
+        limit_fields = True
+
+
+# the serializer not inherit DynModelSerializer. 
+# but it have a DynModelSerializer field.
+class ArticleDynMixinSerializer(DynSerializerMixin, ModelSerializer):
+    review = ReviewDynSerializer(many=True, source='reviews')
+
+    class Meta:
+        model = Article
+        fields = ['id', 'title', 'created', 'updated', 'content', 'review']
+
+```
+
+伝われ〜 ;D
