@@ -3,7 +3,68 @@ from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
 
-class DynModelSerializer(serializers.ModelSerializer):
+class DynSerializerMixin:
+    """
+    A serializer non inherited DynModelSerializer must inherit this mixin if it have DynModelSerializer Fields.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super(DynSerializerMixin, self).__init__(*args, **kwargs)
+
+        request = self.get_request()
+
+        if request:
+            # don't limit fields for write operations
+            if request.method == 'GET':
+                self.exclude_omitted_fields(request)
+
+                for field_name, field_name in self.fields.items():
+                    # assigning parent context to allow child serializers to update their fields
+                    # later
+                    field_name._context = self.context
+            else:
+                self.limit_fields = False
+                self.request_all_allowed_fields()
+        else:
+            self.request_all_allowed_fields()
+
+    def get_request(self):
+        return self.context.get('request')
+
+    def exclude_omitted_fields(self, request, parent_limit_fields=False):
+        """
+        exclude omitted fields if parent_limit_fields or limit_fields are True.
+        if both are False, all fields are appear.
+        """
+
+        limit_fields = getattr(self, 'limit_fields', parent_limit_fields)
+        field_names = self.get_requested_field_names(request)
+        self._requested_fields = field_names
+
+        if limit_fields and field_names is not None:
+            # Drop any fields that are not specified in passed query param
+            allowed = set(field_names)
+            existing = set(self.fields.keys())
+            for field_name in existing - allowed:
+                self.fields.pop(field_name)
+
+        for field_name in self.fields:
+            field = self.fields[field_name]
+
+            if isinstance(field, serializers.ListSerializer):
+                if isinstance(field.child, DynSerializerMixin):
+                    field.child.exclude_omitted_fields(request, limit_fields)
+            elif isinstance(field, DynSerializerMixin):
+                field.exclude_omitted_fields(request, limit_fields)
+
+    def request_all_allowed_fields(self):
+        pass
+
+    def get_requested_field_names(self, request):
+        return set(self.fields.keys())
+
+
+class DynModelSerializer(DynSerializerMixin, serializers.ModelSerializer):
     """
     Factory to include/exclude fields dynamically
     """
@@ -33,25 +94,6 @@ class DynModelSerializer(serializers.ModelSerializer):
 
         super(DynModelSerializer, self).__init__(*args, **kwargs)
 
-        if self.limit_fields:
-            request = self.get_request()
-
-            if request:
-                # don't limit fields for write operations
-                if request.method == 'GET':
-                    self.exclude_omitted_fields(request)
-                    for field_name, field_name in self.fields.items():
-                        # assigning parent context to allow child serializers to update their fields
-                        # later
-                        field_name._context = self.context
-                else:
-                    self.limit_fields = False
-                    self.request_all_allowed_fields()
-            else:
-                self.request_all_allowed_fields()
-        else:
-            self.request_all_allowed_fields()
-
     def get_value(self, data):
         if not self.nested or self.field_name not in data:
             return super().get_value(data)
@@ -74,9 +116,6 @@ class DynModelSerializer(serializers.ModelSerializer):
         for field in self._allowed_fields:
             self._requested_fields.append(field)
 
-    def get_request(self):
-        return self.context.get('request')
-
     def set_allowed_fields(self, fields=None):
         if hasattr(self.Meta, 'fields'):
             meta_fields = list(self.Meta.fields)
@@ -90,25 +129,6 @@ class DynModelSerializer(serializers.ModelSerializer):
         exclude = set(getattr(self.Meta, 'exclude', []))
 
         self._allowed_fields = list(set(include) - exclude)
-
-    def exclude_omitted_fields(self, request):
-        field_names = self.get_requested_field_names(request)
-        self._requested_fields = field_names
-
-        if field_names is not None:
-            # Drop any fields that are not specified in passed query param
-            allowed = set(field_names)
-            existing = set(self.fields.keys())
-            for field_name in existing - allowed:
-                self.fields.pop(field_name)
-
-            for field_name in self.fields:
-                field = self.fields[field_name]
-                if isinstance(field, serializers.ListSerializer):
-                    if isinstance(field.child, DynModelSerializer):
-                        field.child.exclude_omitted_fields(request)
-                elif isinstance(field, DynModelSerializer):
-                    field.exclude_omitted_fields(request)
 
     def get_requested_field_names(self, request):
         fields_param_value = request.query_params.get(self.Meta.fields_param)

@@ -1,9 +1,9 @@
 from datetime import date
-from pprint import pprint
 
-from django.test import TestCase
 from django.contrib.auth import get_user_model
+from django.test import TestCase
 from rest_framework.test import APIClient
+
 from test_samples.sample.sampleapp.models import Author, Article, Review
 
 
@@ -169,3 +169,40 @@ class MainTest(TestCase):
         assert 'user' in response_json, response_json
         assert 'first_name' in response_json['user']
         assert 'username' not in response_json['user']
+
+    def test_limit_fields_for_field_in_dyn_mixin_serializer(self):
+        url = '/dynmixin_article/{}/'.format(self.author1.id)
+        query = 'review_fields=id,stars'
+
+        response = self.client.get('{}?{}'.format(url, query))
+
+        assert response.status_code == 200, response.status_code
+
+        response_json = response.json()
+
+        assert 'title' in response_json, response_json
+        assert 'review' in response_json, response_json
+
+        for review in response_json['review']:
+            assert 'summary' not in review, review
+            assert 'stars' in review, review
+
+    def test_limit_fields_for_field_in_nested_dyn_mixins(self):
+        """
+        test limit fields for Leaf Field of nested DynSerializerMixins
+
+        ex) DynMixin > DynMixin > DynModelSerializer
+        """
+        url = '/dynmixin_author/{}/'.format(self.author1.id)
+        query = 'article_fields=id,review&review_fields=id,stars'
+
+        response = self.client.get('{}?{}'.format(url, query))
+
+        response_json = response.json()
+
+        for article in response_json['article']:
+            assert 'title' in article, article  # because article's serializer inherit not DynModelSerializer but DynSerializerMixin.
+            assert 'review' in article, article
+            for review in article['review']:
+                assert 'summary' not in review, review
+                assert 'stars' in review, review
