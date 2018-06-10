@@ -10,9 +10,9 @@ class DynSerializerMixin:
 
     def __init__(self, *args, **kwargs):
         super(DynSerializerMixin, self).__init__(*args, **kwargs)
+        self.limit_allowed_fields()
 
         request = self.get_request()
-
         if request:
             # don't limit fields for write operations
             if request.method == 'GET':
@@ -33,8 +33,6 @@ class DynSerializerMixin:
         exclude omitted fields if parent_limit_fields or limit_fields are True.
         if both are False, all fields are appear.
         """
-
-        self.limit_allowed_fields()
 
         is_limit_fields = getattr(self, 'limit_fields', None)
         if is_limit_fields is None:
