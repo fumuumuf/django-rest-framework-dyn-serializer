@@ -18,7 +18,7 @@ class ArticleDynSerializer(DynModelSerializer):
     class Meta:
         model = Article
         fields_param = 'article_fields'
-        fields = ['id', 'title', 'created', 'updated', 'content', 'author']
+        fields = '__all__'
 
 
 class ReviewSerializer(DynModelSerializer):

@@ -10,9 +10,9 @@ class DynSerializerMixin:
 
     def __init__(self, *args, **kwargs):
         super(DynSerializerMixin, self).__init__(*args, **kwargs)
+        self.limit_allowed_fields()
 
         request = self.get_request()
-
         if request:
             # don't limit fields for write operations
             if request.method == 'GET':
@@ -24,9 +24,6 @@ class DynSerializerMixin:
                     field_name._context = self.context
             else:
                 self.limit_fields = False
-                self.request_all_allowed_fields()
-        else:
-            self.request_all_allowed_fields()
 
     def get_request(self):
         return self.context.get('request')
@@ -37,31 +34,27 @@ class DynSerializerMixin:
         if both are False, all fields are appear.
         """
 
-        limit_fields = getattr(self, 'limit_fields', parent_limit_fields)
-        field_names = self.get_requested_field_names(request)
-        self._requested_fields = field_names
+        is_limit_fields = getattr(self, 'limit_fields', None)
+        if is_limit_fields is None:
+            is_limit_fields = parent_limit_fields
 
-        if limit_fields and field_names is not None:
-            # Drop any fields that are not specified in passed query param
-            allowed = set(field_names)
-            existing = set(self.fields.keys())
-            for field_name in existing - allowed:
-                self.fields.pop(field_name)
+        if is_limit_fields:
+            self._exclude_omitted_fields(request)
 
         for field_name in self.fields:
             field = self.fields[field_name]
 
             if isinstance(field, serializers.ListSerializer):
                 if isinstance(field.child, DynSerializerMixin):
-                    field.child.exclude_omitted_fields(request, limit_fields)
+                    field.child.exclude_omitted_fields(request, is_limit_fields)
             elif isinstance(field, DynSerializerMixin):
-                field.exclude_omitted_fields(request, limit_fields)
+                field.exclude_omitted_fields(request, is_limit_fields)
 
-    def request_all_allowed_fields(self):
+    def limit_allowed_fields(self):
         pass
 
-    def get_requested_field_names(self, request):
-        return set(self.fields.keys())
+    def _exclude_omitted_fields(self, request):
+        pass
 
 
 class DynModelSerializer(DynSerializerMixin, serializers.ModelSerializer):
@@ -74,7 +67,6 @@ class DynModelSerializer(DynSerializerMixin, serializers.ModelSerializer):
     }
 
     def __init__(self, *args, **kwargs):
-        self._requested_fields = []
 
         s_type = type(self)
         assert hasattr(self.Meta, 'model'), '{} Meta.model param is required'.format(s_type)
@@ -83,16 +75,15 @@ class DynModelSerializer(DynSerializerMixin, serializers.ModelSerializer):
 
         self.nested = kwargs.pop('nested', False)
         self.default_fields = list(getattr(self.Meta, 'default_fields', ['id']))
-        self.limit_fields = kwargs.pop('limit_fields', getattr(self.Meta, 'limit_fields', False))
-
-        self.set_allowed_fields(kwargs.pop('fields', None))
-
-        for field_name in self.default_fields:
-            assert field_name in self._allowed_fields, '{} Meta.default_fields contains field "{}"'\
-                                                       'not in Meta.fields list'.format(s_type,
-                                                                                        field_name)
+        self.limit_fields = kwargs.pop('limit_fields', getattr(self.Meta, 'limit_fields', None))
+        self._allowed_fields_by_param = kwargs.pop('fields', None)
 
         super(DynModelSerializer, self).__init__(*args, **kwargs)
+
+        for field_name in self.default_fields:
+            assert field_name in self.allowed_fields, '{} Meta.default_fields contains field "{}"' \
+                                                      'not in Meta.fields list'.format(s_type,
+                                                                                       field_name)
 
     def get_value(self, data):
         if not self.nested or self.field_name not in data:
@@ -112,31 +103,14 @@ class DynModelSerializer(DynSerializerMixin, serializers.ModelSerializer):
         except (TypeError, ValueError):
             self.fail('incorrect_type', data_type=type(data).__name__)
 
-    def request_all_allowed_fields(self):
-        for field in self._allowed_fields:
-            self._requested_fields.append(field)
-
-    def set_allowed_fields(self, fields=None):
-        if hasattr(self.Meta, 'fields'):
-            meta_fields = list(self.Meta.fields)
-        else:
-            meta_fields = []
-            for field_obj in self.Meta.model._meta.get_fields():
-                meta_fields.append(field_obj.name)
-
-        include = meta_fields if not fields else [
-            field for field in meta_fields if field in fields]
-        exclude = set(getattr(self.Meta, 'exclude', []))
-
-        self._allowed_fields = list(set(include) - exclude)
-
     def get_requested_field_names(self, request):
         fields_param_value = request.query_params.get(self.Meta.fields_param)
-        if fields_param_value is not None:
-            requested_fields = fields_param_value.split(',')
-            if requested_fields:
-                return list(set(self._allowed_fields).intersection(set(requested_fields)))
-        return list(self.default_fields)
+
+        if fields_param_value is None:
+            return list(self.default_fields)
+
+        param_values = set(fields_param_value.split(','))
+        return list(param_values)
 
     def is_field_requested(self, field_name):
         """
@@ -146,16 +120,39 @@ class DynModelSerializer(DynSerializerMixin, serializers.ModelSerializer):
             request = self.get_request()
             assert request, "request can't be None in limit_fields mode"
             requested_fields = self.get_requested_field_names(request)
-            return field_name in requested_fields
+            return field_name in requested_fields and field_name in self.allowed_fields
         else:
             # always return field if limit_fields flag set to False
             return True
 
-    def get_field_names(self, declared_fields, info):
+    @property
+    def allowed_fields(self):
+        if not hasattr(self, '_allowed_fields'):
+            self.limit_allowed_fields()
+        return self._allowed_fields
+
+    def limit_allowed_fields(self):
         """
-        Return only requested and allowed field names
+        limit fields by a init's argument:`fields`.
+
+        this method is called before call _exclude_omitted_fields.
+        (exclude omitted fields from limited fields by this function.)
         """
-        return self._requested_fields
+        if self._allowed_fields_by_param:
+            exclude_fields = [n for n in self.fields.keys() if n not in self._allowed_fields_by_param]
+            for name in exclude_fields:
+                self.fields.pop(name)
+
+        self._allowed_fields = [n for n in self.fields.keys()]
+
+    def _exclude_omitted_fields(self, request):
+
+        enabled_fields = self.get_requested_field_names(request)
+
+        allowed = set(enabled_fields)
+        existing = set(self.fields.keys())
+        for field_name in existing - allowed:
+            self.fields.pop(field_name)
 
     class Meta:
         model = None
